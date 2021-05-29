@@ -1,6 +1,9 @@
+#include <boost/channels/channel.hpp>
+
 #include <boost/asio.hpp>
 #include <boost/mp11/tuple.hpp>
 #include <boost/variant2/variant.hpp>
+
 #include <concepts>
 #include <deque>
 #include <iostream>
@@ -29,12 +32,10 @@ SameHelper<U, T>;
 // clang-format on
 }   // namespace detail
 
-struct select_wait_op;
-
 // clang-format off
 template < class T >
 concept selectable =
-requires(T const &c, T& m, std::shared_ptr<select_wait_op> const& pwo, std::size_t i)
+requires(T const &c, T& m, std::shared_ptr<detail::select_wait_op> const& pwo, std::size_t i)
 {
     { c.count() } -> detail::convertible_to< std::size_t >;
     { m.consume() } -> detail::same_as< typename T::value_type >;
@@ -43,16 +44,8 @@ requires(T const &c, T& m, std::shared_ptr<select_wait_op> const& pwo, std::size
 };
 // clang-format on
 
-struct select_wait_op : std::enable_shared_from_this< select_wait_op >
-{
-    virtual void
-    notify(std::size_t which) = 0;
-
-    virtual ~select_wait_op() = default;
-};
-
 template < class Executor, class Handler >
-struct implement_select_wait_op final : select_wait_op
+struct implement_select_wait_op final : detail::select_wait_op
 {
     implement_select_wait_op(Executor exec, Handler handler)
     : exec_(std::move(exec))
@@ -90,71 +83,6 @@ struct implement_select_wait_op final : select_wait_op
     bool     armed_ = true;
 };
 
-template < class ValueType, class ExecutorType = asio::any_io_executor >
-struct channel
-{
-    using executor_type = ExecutorType;
-
-    using value_type = ValueType;
-
-    channel(ExecutorType exec)
-    : exec_(std::move(exec))
-    , queue_()
-    {
-    }
-
-    executor_type const &
-    get_executor() const
-    {
-        return exec_;
-    }
-
-    std::size_t
-    count() const
-    {
-        return queue_.size();
-    }
-
-    value_type
-    consume()
-    {
-        BOOST_ASSERT(count());
-        auto result = std::move(queue_.front());
-        queue_.pop();
-        return result;
-    }
-
-    void
-    notify_wait(std::shared_ptr< select_wait_op > const &op, std::size_t which)
-    {
-        BOOST_ASSERT(!wait_op_);
-        which_   = which;
-        wait_op_ = op;
-    }
-
-    void
-    cancel_wait()
-    {
-        BOOST_ASSERT(wait_op_);
-        which_ = (std::numeric_limits< std::size_t >::max)();
-        wait_op_.reset();
-    }
-
-    void
-    notify_value(value_type val)
-    {
-        queue_.push(std::move(val));
-        if (wait_op_)
-            wait_op_->notify(which_);
-    }
-
-  private:
-    ExecutorType                                     exec_;
-    std::queue< ValueType, std::deque< ValueType > > queue_;
-    std::shared_ptr< select_wait_op >                wait_op_ = nullptr;
-    std::size_t which_ = (std::numeric_limits< std::size_t >::max)();
-};
-
 template < selectable... Ts >
 struct result_of_select
 {
@@ -169,7 +97,7 @@ template < selectable... Ts, std::size_t... Is >
 void
 setup_notify(std::tuple< Ts &... > ts,
              std::index_sequence< Is... >,
-             std::shared_ptr< select_wait_op > const &op)
+             std::shared_ptr< detail::select_wait_op > const &op)
 {
     (get< Is >(ts).notify_wait(op, Is), ...);
 }
@@ -256,36 +184,33 @@ select(Ts &...ts)
 }}   // namespace boost::channels
 
 boost::asio::awaitable< void >
-pull(boost::channels::channel< std::string > &c1,
-     boost::channels::channel< std::string > &c2)
+pull(boost::channels::channel< std::string > &c1)
 {
-    for (int i = 0; i < 2; ++i)
+    boost::channels::error_code ec;
+    while (!ec)
     {
-        auto which = co_await boost::channels::select(c1, c2);
-        switch (which.index())
-        {
-        case 0:
-            std::cout << "c1 says: " << get< 0 >(which) << "\n";
-            break;
-        case 1:
-            std::cout << "c2 says: " << get< 1 >(which) << "\n";
-            break;
-        }
+        auto s = co_await c1.async_consume(
+            boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+        if (!ec)
+            std::cout << "c1 says: " << s << "\n";
     }
+    std::cout << "c1 error: " << ec.message() << "\n";
 }
 
 boost::asio::awaitable< void >
-push(boost::channels::channel< std::string > &c1,
-     boost::channels::channel< std::string > &c2)
+push(boost::channels::channel< std::string > &c1)
 {
     auto t =
         boost::asio::steady_timer(co_await boost::asio::this_coro::executor);
     t.expires_after(std::chrono::seconds(1));
     co_await t.async_wait(boost::asio::use_awaitable);
-    c1.notify_value("Hello");
+    co_await c1.async_send("Hello", boost::asio::use_awaitable);
     t.expires_after(std::chrono::seconds(1));
     co_await t.async_wait(boost::asio::use_awaitable);
-    c2.notify_value("World");
+    co_await c1.async_send("World", boost::asio::use_awaitable);
+    t.expires_after(std::chrono::seconds(1));
+    co_await t.async_wait(boost::asio::use_awaitable);
+    c1.close();
 }
 
 int
@@ -295,10 +220,9 @@ main()
     auto                    e = ioc.get_executor();
 
     boost::channels::channel< std::string > c1(e);
-    boost::channels::channel< std::string > c2(e);
 
-    boost::asio::co_spawn(e, pull(c1, c2), boost::asio::detached);
-    boost::asio::co_spawn(e, push(c1, c2), boost::asio::detached);
+    boost::asio::co_spawn(e, pull(c1), boost::asio::detached);
+    boost::asio::co_spawn(e, push(c1), boost::asio::detached);
 
     ioc.run();
 }
