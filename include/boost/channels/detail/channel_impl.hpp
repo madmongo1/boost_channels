@@ -10,8 +10,6 @@
 #ifndef BOOST_CHANNELS_DETAIL_CHANNEL_IMPL_HPP
 #define BOOST_CHANNELS_DETAIL_CHANNEL_IMPL_HPP
 
-#include <forward_list>
-
 #include <boost/channels/detail/channel_consume_op.hpp>
 #include <boost/channels/detail/channel_send_op.hpp>
 
@@ -49,6 +47,8 @@ struct alignas(std::max_align_t) channel_impl
 
     ~channel_impl()
     {
+        stop_senders();
+        stop_consumers();
         while (size_)
         {
             auto p = mem(first_);
@@ -64,24 +64,32 @@ struct alignas(std::max_align_t) channel_impl
         return exec_;
     }
 
-    void close()
+    void
+    close()
     {
         state_ = state_closed;
+        stop_senders();
+        stop_consumers();
+    }
 
-        while(!senders_.empty())
+    void
+    stop_senders()
+    {
+        while (!senders_.empty())
         {
-            BOOST_ASSERT(free() == 0);
             senders_.front()->notify_error(errors::channel_closed);
             senders_.pop();
         }
+    }
 
-        while(!consumers_.empty())
+    void
+    stop_consumers()
+    {
+        while (!consumers_.empty())
         {
-            BOOST_ASSERT(free() == capacity_);
             consumers_.front()->notify_error(errors::channel_closed);
             consumers_.pop();
         }
-
     }
 
     void
