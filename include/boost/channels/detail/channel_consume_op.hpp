@@ -12,16 +12,14 @@
 
 #include <boost/asio/associated_executor.hpp>
 #include <boost/asio/bind_executor.hpp>
-#include <boost/asio/post.hpp>
+#include <boost/asio/defer.hpp>
+
 namespace boost::channels::detail {
 template < class ValueType >
 struct channel_consume_op_concept
 {
     virtual void
-    notify_value(ValueType v) = 0;
-
-    virtual void
-    notify_error(error_code ec) = 0;
+    notify(error_code ec, ValueType v) = 0;
 
     virtual ~channel_consume_op_concept() = default;
 };
@@ -36,26 +34,15 @@ struct basic_channel_consume_op final : channel_consume_op_concept< ValueType >
     }
 
     virtual void
-    notify_value(ValueType v) override
+    notify(error_code ec, ValueType v) override
     {
         auto handler = asio::bind_executor(
             std::move(exec_),
-            [handler = std::move(handler_), v = std::move(v)]() mutable {
-                handler(error_code(), std::move(v));
+            [handler = std::move(handler_), ec, v = std::move(v)]() mutable {
+                handler(ec, std::move(v));
             });
         destroy();
-        asio::post(std::move(handler));
-    }
-
-    virtual void
-    notify_error(error_code ec) override
-    {
-        auto handler = asio::bind_executor(
-            std::move(exec_), [handler = std::move(handler_), ec]() mutable {
-                handler(ec, ValueType());
-            });
-        destroy();
-        asio::post(std::move(handler));
+        asio::defer(std::move(handler));
     }
 
   private:

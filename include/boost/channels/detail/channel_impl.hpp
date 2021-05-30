@@ -87,7 +87,7 @@ struct alignas(std::max_align_t) channel_impl
     {
         while (!consumers_.empty())
         {
-            consumers_.front()->notify_error(errors::channel_closed);
+            consumers_.front()->notify(errors::channel_closed, ValueType {});
             consumers_.pop();
         }
     }
@@ -125,7 +125,7 @@ struct alignas(std::max_align_t) channel_impl
                 // send and consume to complete.
                 auto my_receiver = std::move(consumers_.front());
                 consumers_.pop();
-                my_receiver->notify_value(send_op->consume());
+                my_receiver->notify(error_code(), send_op->consume());
             }
             break;
         case state_closed:
@@ -143,7 +143,7 @@ struct alignas(std::max_align_t) channel_impl
         {
             // there are values waiting in the circular buffer so immediately
             // deliver the first available
-            consume_op->notify_value(pop());
+            consume_op->notify(error_code(), pop());
 
             // there will now be space in the queue so if there any senders
             // pending delivery, allow one to delliver to the circular buffer
@@ -158,7 +158,7 @@ struct alignas(std::max_align_t) channel_impl
             // nothing in the circular buffer but there is a sender pending
             // delivery.
             /// Consume the sender' value directly into the consumer
-            consume_op->notify_value(senders_.front()->consume());
+            consume_op->notify(error_code(), senders_.front()->consume());
             senders_.pop();
         }
         else
@@ -170,7 +170,7 @@ struct alignas(std::max_align_t) channel_impl
                 consumers_.push(std::move(consume_op));
                 break;
             case state_closed:
-                consume_op->notify_error(errors::channel_closed);
+                consume_op->notify(errors::channel_closed, ValueType {});
                 break;
             }
         }
