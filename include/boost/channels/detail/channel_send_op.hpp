@@ -84,12 +84,23 @@ template < class ValueType, class Executor, class Handler >
 auto
 basic_channel_send_op< ValueType, Executor, Handler >::consume() -> ValueType
 {
+    // move the result value to the local scope
     auto result  = std::move(this->value_);
+
+    // move the handler to local scope and transform it to be associated with
+    // the correct executor.
     auto handler = ::boost::asio::bind_executor(
         std::move(exec_),
         [handler = std::move(handler_)]() mutable { handler(error_code()); });
+
+    // then destroy this object (equivalent to delete this)
     destroy();
+
+    // post the modified handler to its associated executor
     asio::post(std::move(handler));
+
+    // return the value from the local scope to the caller (but note that NRVO
+    // will guarantee that there is not actually a second move)
     return result;
 }
 

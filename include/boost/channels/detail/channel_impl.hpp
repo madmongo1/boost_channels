@@ -95,11 +95,24 @@ struct alignas(std::max_align_t) channel_impl
     void
     notify_send(detail::channel_send_op_concept< ValueType > *send_op)
     {
+        // behaviour of send depends on the state of the implementation.
+        // There are two states, running and closed. We will be in the closed
+        // state if someone has called `close` on the channel.
+        // Note that even if the channel is closed, consumers may still consume
+        // values stored in the circular buffer. However, new values may not
+        // be send into the channel.
         switch (state_)
         {
         case state_running:
             [[likely]] if (consumers_.empty())
             {
+                // In the case that there is no consumer already waiting,
+                // then behaviour depends on whether there is space in the
+                // circular buffer. If so, we store the value in the send_op
+                // there and allow the send_op to complete.
+                // Otherwise, we store the send_op in the queue of pending
+                // send operations for later processing when there is space in
+                // the circular buffer or a pending consume is available.
                 if (free())
                     push(send_op->consume());
                 else
@@ -107,12 +120,17 @@ struct alignas(std::max_align_t) channel_impl
             }
             else
             {
+                // A consumer is waiting, so we can unblock the consumer
+                // by passing it the value in the send_op, causing both
+                // send and consume to complete.
                 auto my_receiver = std::move(consumers_.front());
                 consumers_.pop();
                 my_receiver->notify_value(send_op->consume());
             }
             break;
         case state_closed:
+            // If the channel is closed, then all send operations result in
+            // an error
             [[unlikely]] send_op->notify_error(errors::channel_closed);
             break;
         }
