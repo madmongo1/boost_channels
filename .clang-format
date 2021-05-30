@@ -59,21 +59,21 @@ DerivePointerAlignment: false
 DisableFormat:   false
 ExperimentalAutoDetectBinPacking: false
 FixNamespaceComments: true
-ForEachMacros:   
+ForEachMacros:
   - foreach
   - Q_FOREACH
   - BOOST_FOREACH
 IncludeBlocks:   Regroup
-IncludeCategories: 
+IncludeCategories:
   - Regex:           '^<boost/channels/.*>'
     Priority:        2
   - Regex:           '^(<boost/.*)'
     Priority:        3
   - Regex:           '<[[:alnum:].]+>'
     Priority:        4
-  - Regex:           '.*'
+  - Regex:           '^(".*)'
     Priority:        1
-IncludeIsMainRegex: '(Test)?$'
+IncludeIsMainRegex: '(Test)$'
 IndentCaseLabels: false
 IndentPPDirectives: None
 IndentWidth:     4
