@@ -15,6 +15,7 @@
 #include <boost/channels/error_code.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/assert.hpp>
 #include <boost/variant2/variant.hpp>
 
@@ -43,6 +44,10 @@ struct channel
     using value_type = ValueType;
 
     channel(Executor exec, std::size_t capacity = 0);
+    ~channel()
+    {
+        close();
+    }
 
     /// @brief Return a boolean indicating whether a call to consume may be
     /// made.
@@ -112,7 +117,7 @@ struct channel
     /// @post closed() == true
     /// @note If called on an already closed channel, no action is taken.
     void
-    close();
+    close() noexcept;
 
     executor_type const &
     get_executor() const
@@ -123,7 +128,7 @@ struct channel
 
   private:
     using impl_type = detail::channel_impl< ValueType, Executor >;
-    using impl_ptr  = std::unique_ptr< impl_type, detail::free_deleter >;
+    using impl_ptr  = std::shared_ptr< impl_type >;
 
     impl_ptr
     create_impl(Executor exec, std::size_t capacity);
@@ -181,7 +186,8 @@ channel< ValueType, Executor >::create_impl(Executor exec, std::size_t capacity)
 
     try
     {
-        return impl_ptr(new (pmem) impl_type(std::move(exec), capacity));
+        return impl_ptr(new (pmem) impl_type(std::move(exec), capacity),
+                        detail::free_deleter());
     }
     catch (...)
     {
@@ -200,12 +206,17 @@ channel< ValueType, Executor >::async_send(value_type    value,
         BOOST_THROW_EXCEPTION(std::logic_error("channel is null"));
 
     return asio::async_initiate< SendHandler, void(error_code) >(
-        [value = std::move(value), this](auto &&handler) {
-            auto send_op = detail::create_channel_send_op(
-                std::move(value),
-                this->impl_->get_executor(),
-                std::forward< decltype(handler) >(handler));
-            impl_->notify_send(send_op);
+        [value1 = std::move(value), impl1 = impl_](auto &&handler) {
+            asio::dispatch(
+                impl1->get_executor(),
+                [impl2    = impl1,
+                 handler2 = std::forward< decltype(handler) >(handler),
+                 value2   = std::move(value1)]() mutable {
+                    impl2->notify_send(
+                        detail::create_channel_send_op(std::move(value2),
+                                                       impl2->get_executor(),
+                                                       std::move(handler2)));
+                });
         },
         token);
 }
@@ -220,21 +231,27 @@ channel< ValueType, Executor >::async_consume(ConsumeHandler &&token)
         BOOST_THROW_EXCEPTION(std::logic_error("channel is null"));
 
     return asio::async_initiate< ConsumeHandler, void(error_code, ValueType) >(
-        [this](auto &&handler) {
-            auto consume_op = detail::create_channel_consume_op< ValueType >(
-                this->impl_->get_executor(),
-                std::forward< decltype(handler) >(handler));
-            impl_->notify_consume(consume_op);
+        [impl1 = impl_](auto &&handler) {
+            asio::dispatch(
+                impl1->get_executor(),
+                [impl2 = impl1,
+                 handler2 =
+                     std::forward< decltype(handler) >(handler)]() mutable {
+                    impl2->notify_consume(
+                        detail::create_channel_consume_op< ValueType >(
+                            impl2->get_executor(), std::move(handler2)));
+                });
         },
         token);
 }
 
 template < class ValueType, class Executor >
 void
-channel< ValueType, Executor >::close()
+channel< ValueType, Executor >::close() noexcept
 {
     if (impl_) [[likely]]
-        impl_->close();
+        asio::dispatch(impl_->get_executor(),
+                       [impl = impl_] { impl->close(); });
 }
 
 template < class ValueType, class Executor >
