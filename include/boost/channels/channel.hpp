@@ -44,6 +44,25 @@ struct channel
 
     channel(Executor exec, std::size_t capacity = 0);
 
+    /// @brief Return a boolean indicating whether a call to consume may be
+    /// made.
+    ///
+    /// @note The return value of this function is only valid until the next
+    /// suspension point as after that, other coroutines could have sent or
+    /// consumed values.
+    /// @return A boolean indicating whether a call to @see consume may be made
+    std::size_t
+    ready() const;
+
+    /// @brief Consume one value from the channel if there is one available.
+    /// @param ec is an out parameter referencing an error_code which will be
+    /// overwritten by this function. If a value is available, ec will be
+    /// cleared. Otherwise, ec will contain an error code.
+    /// @return A value, which will be default-constructed if ec is assigned an
+    /// error code.
+    ValueType
+    consume(error_code &ec);
+
     /// @brief Consume one value if there is a value available to be consumed
     /// immediately.
     /// @param ec is a reference to an error_code. The value of this variable
@@ -216,6 +235,18 @@ channel< ValueType, Executor >::close()
 {
     if (impl_) [[likely]]
         impl_->close();
+}
+
+template < class ValueType, class Executor >
+std::size_t
+channel< ValueType, Executor >::ready() const
+{
+    if (impl_) [[likely]]
+        return impl_->ready();
+    else
+        // in the case where the channel is null, we return true so that the
+        // next call to consume will report the error
+        return true;
 }
 
 }   // namespace boost::channels

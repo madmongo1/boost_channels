@@ -1,6 +1,7 @@
 #include <boost/channels/channel.hpp>
 
 #include <boost/asio.hpp>
+#include <boost/asio/experimental/as_single.hpp>
 #include <boost/mp11/tuple.hpp>
 #include <boost/variant2/variant.hpp>
 
@@ -183,46 +184,71 @@ select(Ts &...ts)
 
 }}   // namespace boost::channels
 
-boost::asio::awaitable< void >
+using namespace boost;
+using namespace std::literals;
+
+using asio::use_awaitable;
+using asio::experimental::as_single;
+
+template < class... Ts >
+auto
+println(Ts const &...ts)
+{
+    const char *sep = "";
+    auto        op  = [&](auto const &x) {
+        std::cout << sep << x;
+        sep = " ";
+    };
+    mp11::tuple_for_each(std::tie(ts...), op);
+    std::cout << '\n';
+}
+
+asio::awaitable< void >
 pull(boost::channels::channel< std::string > &c1)
 {
-    boost::channels::error_code ec;
-    while (!ec)
+    for (;;)
     {
-        auto s = co_await c1.async_consume(
-            boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-        if (!ec)
-            std::cout << "c1 says: " << s << "\n";
+        auto [ec, s] = co_await c1.async_consume(as_single(use_awaitable));
+        if (ec)
+        {
+            println("c1 error:", ec.message());
+            break;
+        }
+        else
+            println("c1 says:", s);
     }
-    std::cout << "c1 error: " << ec.message() << "\n";
+}
+
+template < class Duration >
+asio::awaitable< void >
+wait(asio::steady_timer &t, Duration d)
+{
+    t.expires_after(d);
+    co_await t.async_wait(asio::use_awaitable);
 }
 
 boost::asio::awaitable< void >
 push(boost::channels::channel< std::string > &c1)
 {
-    auto t =
-        boost::asio::steady_timer(co_await boost::asio::this_coro::executor);
-    t.expires_after(std::chrono::seconds(1));
-    co_await t.async_wait(boost::asio::use_awaitable);
-    co_await c1.async_send("Hello", boost::asio::use_awaitable);
-    t.expires_after(std::chrono::seconds(1));
-    co_await t.async_wait(boost::asio::use_awaitable);
-    co_await c1.async_send("World", boost::asio::use_awaitable);
-    t.expires_after(std::chrono::seconds(1));
-    co_await t.async_wait(boost::asio::use_awaitable);
+    auto t = asio::steady_timer(co_await asio::this_coro::executor);
+    co_await wait(t, 500ms);
+    co_await c1.async_send("Hello", use_awaitable);
+    co_await wait(t, 500ms);
+    co_await c1.async_send("World", use_awaitable);
+    co_await wait(t, 500ms);
     c1.close();
 }
 
 int
 main()
 {
-    boost::asio::io_context ioc;
-    auto                    e = ioc.get_executor();
+    auto ioc = asio::io_context();
+    auto e   = ioc.get_executor();
 
-    boost::channels::channel< std::string > c1(e);
+    channels::channel< std::string > c1(e);
 
-    boost::asio::co_spawn(e, pull(c1), boost::asio::detached);
-    boost::asio::co_spawn(e, push(c1), boost::asio::detached);
+    asio::co_spawn(e, pull(c1), asio::detached);
+    asio::co_spawn(e, push(c1), asio::detached);
 
     ioc.run();
 }
