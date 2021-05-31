@@ -13,6 +13,7 @@
 #include <boost/asio/associated_executor.hpp>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/defer.hpp>
+#include <boost/channels/error_code.hpp>
 
 namespace boost::channels::detail {
 
@@ -37,12 +38,11 @@ struct channel_send_op_concept
     ValueType value_;
 };
 
-template < class ValueType, class Executor, class Handler >
+template < class ValueType, class Handler >
 struct basic_channel_send_op final : channel_send_op_concept< ValueType >
 {
-    basic_channel_send_op(ValueType value, Executor exec, Handler handler)
+    basic_channel_send_op(ValueType value, Handler handler)
     : channel_send_op_concept< ValueType >(std::move(value))
-    , exec_(std::move(exec))
     , handler_(std::move(handler))
     {
     }
@@ -60,38 +60,29 @@ struct basic_channel_send_op final : channel_send_op_concept< ValueType >
     void
     destroy();
 
-    Executor exec_;
-    Handler  handler_;
+    Handler handler_;
 };
 
-template < class ValueType, class DefaultExecutor, class Handler >
+template < class ValueType, class Handler >
 auto
-create_channel_send_op(ValueType              value,
-                       DefaultExecutor const &dflt_exec,
-                       Handler &&             handler)
+create_channel_send_op(ValueType value, Handler &&handler)
 {
-    auto exec =
-        asio::prefer(::boost::asio::get_associated_executor(handler, dflt_exec),
-                     ::boost::asio::execution::outstanding_work.tracked);
-
-    using op_type = basic_channel_send_op< ValueType,
-                                           decltype(exec),
-                                           std::decay_t< Handler > >;
-    return new op_type(
-        std::move(value), std::move(exec), std::forward< Handler >(handler));
+    using op_type = basic_channel_send_op< ValueType, std::decay_t< Handler > >;
+    return new op_type(std::move(value), std::forward< Handler >(handler));
 }
 
-template < class ValueType, class Executor, class Handler >
+template < class ValueType, class Handler >
 auto
-basic_channel_send_op< ValueType, Executor, Handler >::consume() -> ValueType
+basic_channel_send_op< ValueType, Handler >::consume() -> ValueType
 {
     // move the result value to the local scope
     auto result = std::move(this->value_);
 
     // move the handler to local scope and transform it to be associated with
     // the correct executor.
+    auto ex      = asio::get_associated_executor(handler_);
     auto handler = ::boost::asio::bind_executor(
-        std::move(exec_),
+        ex,
         [handler = std::move(handler_)]() mutable { handler(error_code()); });
 
     // then destroy this object (equivalent to delete this)
@@ -105,21 +96,20 @@ basic_channel_send_op< ValueType, Executor, Handler >::consume() -> ValueType
     return result;
 }
 
-template < class ValueType, class Executor, class Handler >
+template < class ValueType, class Handler >
 auto
-basic_channel_send_op< ValueType, Executor, Handler >::notify_error(
-    error_code ec) -> void
+basic_channel_send_op< ValueType, Handler >::notify_error(error_code ec) -> void
 {
+    auto ex      = asio::get_associated_executor(handler_);
     auto handler = asio::bind_executor(
-        std::move(exec_),
-        [handler = std::move(handler_), ec]() mutable { handler(ec); });
+        ex, [handler = std::move(handler_), ec]() mutable { handler(ec); });
     destroy();
     asio::defer(std::move(handler));
 }
 
-template < class ValueType, class Executor, class Handler >
+template < class ValueType, class Handler >
 auto
-basic_channel_send_op< ValueType, Executor, Handler >::destroy() -> void
+basic_channel_send_op< ValueType, Handler >::destroy() -> void
 {
     delete this;
 }

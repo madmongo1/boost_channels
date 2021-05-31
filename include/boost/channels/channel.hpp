@@ -10,12 +10,14 @@
 #ifndef BOOST_CHANNELS_CHANNEL_HPP
 #define BOOST_CHANNELS_CHANNEL_HPP
 
+#include <boost/channels/concepts/std_lockable.hpp>
 #include <boost/channels/detail/free_deleter.hpp>
 #include <boost/channels/detail/select_wait_op.hpp>
 #include <boost/channels/error_code.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/dispatch.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/assert.hpp>
 #include <boost/variant2/variant.hpp>
 
@@ -26,16 +28,27 @@
 namespace boost::channels {
 
 namespace detail {
-template < class ValueType, class Executor >
+template < class ValueType, concepts::Lockable Mutex >
 struct channel_impl;
 };
+
+// clang-format off
+template < class Executor >
+concept constructible_with_system_executor =
+requires(asio::system_executor se)
+{
+    static_cast<Executor>(se);
+};
+// clang-format on
 
 /// @brief Provides a communications channel between asynchronous coroutines.
 ///
 /// Based on golang's channel idiom.
 /// @tparam ValueType is the type of value passed through the channel.
 /// @tparam Executor is the type of executor associated with the channel.
-template < class ValueType, class Executor = asio::any_io_executor >
+template < class ValueType,
+           class Executor           = asio::any_io_executor,
+           concepts::Lockable Mutex = std::mutex >
 struct channel
 {
     using executor_type = Executor;
@@ -43,21 +56,21 @@ struct channel
     /// @brief T type of value handled by this channel
     using value_type = ValueType;
 
+    /// @brief Construct a channel associated with the system_executor
+    /// @param capacity
+    template < class T = Executor >
+    requires constructible_with_system_executor< T >
+    channel(std::size_t capacity = 0);
+
+    /// @brief Construct an executor associated with the given executor
+    /// @param exec
+    /// @param capacity
     channel(Executor exec, std::size_t capacity = 0);
+
     ~channel()
     {
         close();
     }
-
-    /// @brief Return a boolean indicating whether a call to consume may be
-    /// made.
-    ///
-    /// @note The return value of this function is only valid until the next
-    /// suspension point as after that, other coroutines could have sent or
-    /// consumed values.
-    /// @return A boolean indicating whether a call to @see consume may be made
-    std::size_t
-    ready() const;
 
     /// @brief Consume one value from the channel if there is one available.
     /// @param ec is an out parameter referencing an error_code which will be
@@ -122,25 +135,36 @@ struct channel
     executor_type const &
     get_executor() const
     {
-        BOOST_ASSERT(impl_);
-        return impl_->get_executor();
+        return exec_;
+    }
+
+    using impl_type = detail::channel_impl< ValueType, Mutex >;
+    using impl_ptr  = std::shared_ptr< impl_type >;
+
+    impl_ptr const &
+    get_implementation() const
+    {
+        return impl_;
     }
 
   private:
-    using impl_type = detail::channel_impl< ValueType, Executor >;
-    using impl_ptr  = std::shared_ptr< impl_type >;
-
     impl_ptr
-    create_impl(Executor exec, std::size_t capacity);
+    create_impl(std::size_t capacity);
 
   private:
+    Executor exec_;
     impl_ptr impl_;
 };
 
 }   // namespace boost::channels
 
+#include <boost/channels/concepts/equality_comparable.hpp>
+#include <boost/channels/concepts/executor.hpp>
 #include <boost/channels/detail/channel_impl.hpp>
 #include <boost/channels/detail/channel_send_op.hpp>
+#include <boost/channels/detail/consumer_op_function.hpp>
+#include <boost/channels/detail/postit.hpp>
+#include <boost/channels/detail/producer_op_function.hpp>
 
 #include <cstdlib>
 #include <new>
@@ -148,15 +172,17 @@ struct channel
 
 namespace boost::channels {
 
-template < class ValueType, class Executor >
-channel< ValueType, Executor >::channel(Executor exec, std::size_t capacity)
-: impl_(create_impl(std::move(exec), capacity))
+template < class ValueType, class Executor, concepts::Lockable Mutex >
+channel< ValueType, Executor, Mutex >::channel(Executor    exec,
+                                               std::size_t capacity)
+: exec_(std::move(exec))
+, impl_(create_impl(capacity))
 {
 }
 
-template < class ValueType, class Executor >
+template < class ValueType, class Executor, concepts::Lockable Mutex >
 auto
-channel< ValueType, Executor >::consume_if(error_code &ec)
+channel< ValueType, Executor, Mutex >::consume_if(error_code &ec)
     -> std::optional< value_type >
 {
     ec.clear();
@@ -172,9 +198,9 @@ channel< ValueType, Executor >::consume_if(error_code &ec)
     }
 }
 
-template < class ValueType, class Executor >
+template < class ValueType, class Executor, concepts::Lockable Mutex >
 auto
-channel< ValueType, Executor >::create_impl(Executor exec, std::size_t capacity)
+channel< ValueType, Executor, Mutex >::create_impl(std::size_t capacity)
     -> impl_ptr
 {
     auto extra  = (sizeof(ValueType) * capacity) + (sizeof(impl_type) - 1);
@@ -186,8 +212,7 @@ channel< ValueType, Executor >::create_impl(Executor exec, std::size_t capacity)
 
     try
     {
-        return impl_ptr(new (pmem) impl_type(std::move(exec), capacity),
-                        detail::free_deleter());
+        return impl_ptr(new (pmem) impl_type(capacity), detail::free_deleter());
     }
     catch (...)
     {
@@ -196,74 +221,106 @@ channel< ValueType, Executor >::create_impl(Executor exec, std::size_t capacity)
     }
 }
 
-template < class ValueType, class Executor >
+/// @brief Rebind a completion handler to a given executor and call a function
+/// with the resulting handler
+///
+/// The implementation is free to modify the handler's type or use the same
+/// type.
+/// @tparam Executor
+/// @tparam Handler
+/// @tparam F
+/// @param enew
+/// @param handler
+/// @param f
+template < class Executor, class Handler, class F >
+void
+rebind_and_call(Executor const &enew, Handler &&handler, F &&f)
+{
+    f(asio::bind_executor(
+        enew,
+        [handler1 = std::forward< Handler >(handler)]< class... Args >(
+            Args && ...args) mutable {
+            handler1(std::forward< Args >(args)...);
+        }));
+}
+
+template < class ValueType, class Executor, concepts::Lockable Mutex >
 template < BOOST_ASIO_COMPLETION_TOKEN_FOR(void(error_code)) SendHandler >
 BOOST_ASIO_INITFN_RESULT_TYPE(SendHandler, void(error_code))
-channel< ValueType, Executor >::async_send(value_type    value,
-                                           SendHandler &&token)
+channel< ValueType, Executor, Mutex >::async_send(value_type    value,
+                                                  SendHandler &&token)
 {
-    if (!impl_) [[unlikely]]
-        BOOST_THROW_EXCEPTION(std::logic_error("channel is null"));
-
     return asio::async_initiate< SendHandler, void(error_code) >(
-        [value1 = std::move(value), impl1 = impl_](auto &&handler) {
-            asio::dispatch(
-                impl1->get_executor(),
-                [impl2    = impl1,
-                 handler2 = std::forward< decltype(handler) >(handler),
-                 value2   = std::move(value1)]() mutable {
-                    impl2->notify_send(
-                        detail::create_channel_send_op(std::move(value2),
-                                                       impl2->get_executor(),
-                                                       std::move(handler2)));
-                });
+        [value1 = std::move(value),
+         impl1  = impl_,
+         default_executor =
+             get_executor()]< class Handler1 >(Handler1 &&handler1) mutable {
+            if (impl1) [[likely]]
+            {
+                auto exec1 = asio::prefer(
+                    asio::get_associated_executor(handler1, default_executor),
+                    asio::execution::outstanding_work.tracked);
+                auto op = detail::make_producer_op_function< Mutex >(
+                    std::move(value1),
+                    detail::postit(std::move(exec1),
+                                   std::forward< Handler1 >(handler1)));
+                impl1->submit_produce_op(op);
+            }
+            else [[unlikely]]
+            {
+                auto exec1 =
+                    asio::get_associated_executor(handler1, default_executor);
+
+                auto completion = detail::postit(
+                    std::move(exec1), std::forward< Handler1 >(handler1));
+                completion(error_code(errors::channel_null));
+            }
         },
         token);
 }
 
-template < class ValueType, class Executor >
+template < class ValueType, class Executor, concepts::Lockable Mutex >
 template < BOOST_ASIO_COMPLETION_TOKEN_FOR(void(error_code, ValueType))
                ConsumeHandler >
 BOOST_ASIO_INITFN_RESULT_TYPE(ConsumeHandler, void(error_code, ValueType))
-channel< ValueType, Executor >::async_consume(ConsumeHandler &&token)
+channel< ValueType, Executor, Mutex >::async_consume(ConsumeHandler &&token)
 {
     if (!impl_) [[unlikely]]
         BOOST_THROW_EXCEPTION(std::logic_error("channel is null"));
 
     return asio::async_initiate< ConsumeHandler, void(error_code, ValueType) >(
-        [impl1 = impl_](auto &&handler) {
-            asio::dispatch(
-                impl1->get_executor(),
-                [impl2 = impl1,
-                 handler2 =
-                     std::forward< decltype(handler) >(handler)]() mutable {
-                    impl2->notify_consume(
-                        detail::create_channel_consume_op< ValueType >(
-                            impl2->get_executor(), std::move(handler2)));
-                });
+        [impl1 = impl_, default_executor = get_executor()]< class Handler1 >(
+            Handler1 &&handler1) {
+            if (impl1) [[likely]]
+            {
+                auto exec1 = asio::prefer(
+                    asio::get_associated_executor(handler1, default_executor),
+                    asio::execution::outstanding_work.tracked);
+                auto handler2 = detail::postit(
+                    std::move(exec1), std::forward< Handler1 >(handler1));
+                impl1->submit_consume_op(
+                    detail::make_consumer_op_function< ValueType, Mutex >(std::move(handler2)));
+            }
+            else [[unlikely]]
+            {
+                auto exec1 =
+                    asio::get_associated_executor(handler1, default_executor);
+                auto handler2 = detail::postit(
+                    std::move(exec1), std::forward< Handler1 >(handler1));
+                handler2(error_code(errors::channel_null), ValueType {});
+            }
         },
         token);
 }
 
-template < class ValueType, class Executor >
+template < class ValueType, class Executor, concepts::Lockable Mutex >
 void
-channel< ValueType, Executor >::close() noexcept
+channel< ValueType, Executor, Mutex >::close() noexcept
 {
     if (impl_) [[likely]]
-        asio::dispatch(impl_->get_executor(),
-                       [impl = impl_] { impl->close(); });
-}
-
-template < class ValueType, class Executor >
-std::size_t
-channel< ValueType, Executor >::ready() const
-{
-    if (impl_) [[likely]]
-        return impl_->ready();
-    else
-        // in the case where the channel is null, we return true so that the
-        // next call to consume will report the error
-        return true;
+    {
+        asio::dispatch(get_executor(), [impl = impl_] { impl->close(); });
+    }
 }
 
 }   // namespace boost::channels
