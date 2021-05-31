@@ -10,8 +10,14 @@
 #ifndef BOOST_CHANNELS_INCLUDE_BOOST_CHANNELS_CONFIG_HPP
 #define BOOST_CHANNELS_INCLUDE_BOOST_CHANNELS_CONFIG_HPP
 
-namespace boost::channels
-{
+#include <boost/config.hpp>
+#include <boost/assert.hpp>
+
+#define BOOST_CHANNELS_BUSY_WAIT()
+#define BOOST_CHANNELS_ASSERT(x) BOOST_ASSERT(x)
+
+namespace boost::channels {
+
 
 }
 #endif   // BOOST_CHANNELS_INCLUDE_BOOST_CHANNELS_CONFIG_HPP
