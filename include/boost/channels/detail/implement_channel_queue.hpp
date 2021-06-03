@@ -118,11 +118,20 @@ flush_not_closed(value_buffer_ref< ValueType >             values,
             auto &consumer = *consumers_pending.front();
             auto &producer = *producers_pending.front();
             auto  locks    = channels::detail::lock(consumer, producer);
-            consumer.commit(
-                std::make_tuple(channels::error_code(), producer.consume()));
+            auto  pc       = producer.completed();
+            auto  cc       = consumer.completed();
+            if (!pc && !cc)
+            {
+                consumer.commit(std::make_tuple(channels::error_code(),
+                                                producer.consume()));
+                pc = cc = true;
+            }
             locks.unlock();
-            consumers_pending.pop();
-            producers_pending.pop();
+            if (cc)
+                consumers_pending.pop();
+            if (pc)
+                producers_pending.pop();
+            BOOST_CHANNELS_ASSERT(pc || cc);
         }
 
         break;

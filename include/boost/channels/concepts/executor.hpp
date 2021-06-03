@@ -12,12 +12,14 @@
 
 #include <boost/channels/concepts/boolean_testable.hpp>
 
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/is_executor.hpp>
 
 namespace boost::channels::concepts {
 
 template < class T >
-concept executor_model = asio::is_executor< T >::value;
+concept executor_model =
+    asio::is_executor< T >::value || std::is_same_v< T, asio::any_io_executor >;
 
 // clang-format off
 template<executor_model A, executor_model B>

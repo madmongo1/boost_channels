@@ -134,7 +134,7 @@ struct producer_op_function< std::reference_wrapper< ValueType >,
     {
         BOOST_CHANNELS_ASSERT(!completed_);
 
-        auto completion = completion_;
+        auto completion = std::move(completion_);
 
         // a normal completion handler would destroy itself here
         completed_ = true;
