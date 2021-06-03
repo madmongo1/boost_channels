@@ -10,6 +10,7 @@
 #ifndef BOOST_CHANNELS_INCLUDE_BOOST_CHANNELS_DETAIL_CONSUMER_OP_FUNCTION_HPP
 #define BOOST_CHANNELS_INCLUDE_BOOST_CHANNELS_DETAIL_CONSUMER_OP_FUNCTION_HPP
 
+#include <boost/channels/config.hpp>
 #include <boost/channels/detail/consume_op_interface.hpp>
 
 namespace boost::channels::detail {
@@ -27,13 +28,17 @@ struct consumer_op_function final
         typename detail::basic_consume_op_interface< ValueType,
                                                      Mutex >::value_type;
 
+    using mutex_type =
+        typename detail::basic_consume_op_interface< ValueType,
+                                                     Mutex >::mutex_type;
+
     template <
         class CompletionArg,
         std::enable_if_t< !std::is_base_of_v< consumer_op_function,
                                               std::decay_t< CompletionArg > > >
             * = nullptr >
-    consumer_op_function(CompletionArg&& completion)
-    : completion_(std::forward<CompletionArg>(completion))
+    consumer_op_function(CompletionArg &&completion)
+    : completion_(std::forward< CompletionArg >(completion))
     {
     }
 
@@ -43,8 +48,7 @@ struct consumer_op_function final
         return completed_;
     };
 
-    virtual typename detail::basic_produce_op_interface< ValueType,
-                                                         Mutex >::mutex_type &
+    virtual mutex_type &
     get_mutex() override
     {
         return mutex_;

@@ -24,7 +24,7 @@ endmacro()
 # will check that each header file takes care of all its own include dependencies
 #
 
-file(GLOB_RECURSE includes $<$<VERSION_GREATER_EQUAL:${CMAKE_VERSION},3.12>:CONFIGURE_DEPENDS>
+file(GLOB_RECURSE includes CONFIGURE_DEPENDS
         RELATIVE "${PROJECT_SOURCE_DIR}/include"
         "${PROJECT_SOURCE_DIR}/include/*.hpp")
 set(self_contained_srcs)
@@ -40,7 +40,7 @@ MAKE_BOOST_CHANNELS_TEST(NAME test_self_contained SRCS "${self_contained_srcs}" 
 #
 # Build the individual file tests
 #
-file(GLOB_RECURSE boost_channels_test_srcs $<$<VERSION_GREATER_EQUAL:${CMAKE_VERSION},3.12>:CONFIGURE_DEPENDS>
+file(GLOB_RECURSE boost_channels_test_srcs CONFIGURE_DEPENDS
         "*.cpp")
 list(FILTER boost_channels_test_srcs EXCLUDE REGEX "^(.*)/test_main\\.cpp$")
 
